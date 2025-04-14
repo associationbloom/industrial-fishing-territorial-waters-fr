@@ -1,0 +1,499 @@
+---
+title: "Analyse - activité des navires européens et anglais ≥ 25 m pêchant dans les eaux territoriales
+  françaises (hexagone)"
+author: "Marthe Vienne"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, fig.width = 12, fig.height = 8)
+```
+
+```{r, message=FALSE}
+library(mregions2)
+library(sf)
+library(dplyr)
+library(bloomr.fleetregister)
+library(terra)
+library(tidyterra)
+library(ggplot2)
+library(rnaturalearth)
+library(mapview)
+library(ggbreak) 
+library(basemaps)
+library(gpkg)
+library(ggnewscale)
+library("ggspatial")
+source("utils.R")
+library(kableExtra)
+library(DBI)
+```
+
+Les figures réalisées lors de cette analyse sont sauvegardées dans le dossier *output*.
+
+## Introduction
+
+L'analyse a été conduite à partir des données statiques d'effort de pêche de Global Fishing Watch (GFW) à l'échelle du navire : https://globalfishingwatch.org/data-download/datasets/public-fishing-effort.
+La période d'étude s'étend entre 2021 et 2024. L'étude ne concerne que les navires UE + UK ≥ 25 m pêchant dans les eaux territoriales françaises (uniquement en France hexagonale).
+
+Sur la période d'étude, l'historique de la flotte a été construit à partir du registre de la flotte européenne : https://webgate.ec.europa.eu/fleet-europa/search_en. 
+BLOOM a développé son propre gestionnaire du registre de la flotte qui télécharge et synthétise l'historique des navires : https://github.com/associationbloom/eu-fleet-register-manager.
+Uniquement les navires présents à la fois dans la flotte du registre européen et dans les données GFW ont été retenus.
+
+## Matériel et méthodes
+
+### Zone d'étude
+
+```{r}
+# EEZ
+EEZ <- gaz_search(5677) %>% gaz_geometry()
+st_crs(EEZ) <- 4326
+
+# Internal waters
+internal_waters <- gaz_search(49476) %>% gaz_geometry()
+st_crs(internal_waters) <- 4326
+
+# Territorial waters
+url <- 'https://www.dropbox.com/scl/fi/tdinfwh827rsqnqnxe7gj/SHAPE.zip?rlkey=p86lthmyhz4os45uqaogqx24p&st=mmx5m4fw&dl=1'
+
+download.file(url, destfile = "../data/fr_territorial_waters.zip")
+
+unzip("../data/fr_territorial_waters.zip", exdir = "../data")
+
+territorial_waters <- st_read("../data/SHAPE/EspMar_FR_MT_WGS84.shp", quiet=TRUE) %>%
+  filter(reference == 'Décret n° 2018-681 du 30 juillet 2018') # ne garder que les eaux territoriales hexagonales françaises (https://www.legifrance.gouv.fr/loda/id/JORFTEXT000037273623)
+st_crs(territorial_waters) <- 4326
+
+# Lim ext territorial waters
+url <- 'https://www.dropbox.com/scl/fi/q6tajygloqggmnycnunqr/2_Lim_ext_mer_territoriale.zip?rlkey=zsykt37hp1uxbgf1a6b78w8nj&st=au5ga4o9&dl=1'
+
+download.file(url, destfile = "../data/fr_lim_territorial_waters.zip")
+
+unzip("../data/fr_lim_territorial_waters.zip", exdir = "../data/fr_lim_territorial_waters/")
+
+lim_territorial_waters <- st_read("../data/fr_lim_territorial_waters/2_Lim_ext_mer_territoriale/SHAPE/Lim_ext_MT_WGS84.shp", quiet=TRUE) %>%
+  filter(reference == 'Décret n° 2018-681 du 30 juillet 2018') # ne garder que les eaux territoriales hexagonales françaises (https://www.legifrance.gouv.fr/loda/id/JORFTEXT000037273623)
+st_crs(lim_territorial_waters) <- 4326
+
+# FR fishing coastal waters
+url <- "https://www.dropbox.com/scl/fi/hy0jtl0noq3eu1j96j6f5/fishing_coastal_waters.zip?rlkey=gggt92kgln7hahx26du6bp9v0&st=6w08d4eo&dl=1"
+
+download.file(url, destfile = "../data/fishing_coastal_waters.zip")
+unzip("../data/fishing_coastal_waters.zip", exdir = "../data")
+
+coastal_waters <- st_read("../data/fishing_coastal_waters/french_coastal_waters_6_12_NM.shp", quiet=TRUE)
+st_crs(coastal_waters) <- 4326
+
+# Façade
+url <- "https://www.dropbox.com/scl/fi/hy0jtl0noq3eu1j96j6f5/fishing_coastal_waters.zip?rlkey=gggt92kgln7hahx26du6bp9v0&st=6w08d4eo&dl=1"
+
+download.file(url, destfile = "../data/fishing_coastal_waters.zip")
+unzip("../data/fishing_coastal_waters.zip", exdir = "../data")
+
+coastal_waters <- st_read("../data/fishing_coastal_waters/french_coastal_waters_6_12_NM.shp", quiet=TRUE)
+st_crs(coastal_waters) <- 4326
+
+pal = mapviewPalette("mapviewVectorColors")
+
+mapview(list(EEZ, internal_waters, territorial_waters, coastal_waters), col.regions = pal(4), alpha.regions = c(1, 1, 1, 1))
+```
+
+```{r}
+g <- geopackage("../data/PLANIFICATION_MARITIME_PACK/PlanificationMaritime_MED.gpkg", connect = TRUE)
+med_zone <- g$tables$MSP_Spatial_Plan
+
+g <- geopackage("../data/PLANIFICATION_MARITIME_PACK/PlanificationMaritime_MEMN.gpkg", connect = TRUE)
+memn_zone <- g$tables$MSP_Spatial_Plan
+
+g <- geopackage("../data/PLANIFICATION_MARITIME_PACK/PlanificationMaritime_NAMO.gpkg", connect = TRUE)
+namo_zone <- g$tables$MSP_Spatial_Plan
+
+g <- geopackage("../data/PLANIFICATION_MARITIME_PACK/PlanificationMaritime_SA.gpkg", connect = TRUE)
+sa_zone <- g$tables$MSP_Spatial_Plan
+```
+
+### Activité dans les eaux françaises et distribution de la flotte
+
+Le prétraitement des données et construction de la flotte est disponible dans 0.prepare_fishing_activity_data.html
+```{r}
+df <- readRDS("../data/UE_UK_fishing_effort_gfw_2021-2024.rds")
+```
+
+#### Nombre de navires ayant eu une activité de pêche dans la ZEE FR, les eaux territoriales françaises et dans la bande côtière de pêche
+```{r}
+coordinates_df <- df %>%
+  dplyr::select(lon, lat) %>%
+  distinct()
+
+dsf <- st_as_sf(coordinates_df, coords = c("lon", "lat"))
+st_crs(dsf) <- 4326
+
+inter_eez <- st_join(dsf, EEZ)
+inter_eez$lat = st_coordinates(inter_eez)[, 2]
+inter_eez$lon = st_coordinates(inter_eez)[, 1]
+
+cells_in_eez <- inter_eez %>%
+  filter(!is.na(MRGID)) %>%
+  mutate(in_eez = TRUE) %>%
+  tibble() %>%
+  dplyr::select(c(lon, lat, in_eez)) 
+
+inter_terr_waters <- st_join(dsf, territorial_waters)
+inter_terr_waters$lat = st_coordinates(inter_terr_waters)[, 2]
+inter_terr_waters$lon = st_coordinates(inter_terr_waters)[, 1]
+
+cells_in_terr_waters <- inter_terr_waters %>%
+  filter(!is.na(type)) %>%
+  mutate(in_territorial_waters = TRUE) %>%
+  tibble() %>%
+  dplyr::select(c(lon, lat, in_territorial_waters)) 
+
+inter_fishing_coastal_waters <- st_join(dsf, coastal_waters)
+inter_fishing_coastal_waters$lat = st_coordinates(inter_fishing_coastal_waters)[, 2]
+inter_fishing_coastal_waters$lon = st_coordinates(inter_fishing_coastal_waters)[, 1]
+
+cells_in_coastal_waters <- inter_fishing_coastal_waters %>%
+  filter(!is.na(nature)) %>%
+  mutate(in_fishing_coastal_waters = TRUE) %>%
+  tibble() %>%
+  dplyr::select(c(lon, lat, in_fishing_coastal_waters)) 
+
+df <- df %>%
+  left_join(cells_in_terr_waters, by = c("lat", "lon")) %>%
+  left_join(cells_in_eez, by = c("lat", "lon")) %>%
+  left_join(cells_in_coastal_waters, by = c("lat", "lon")) %>%
+  mutate(in_eez = case_when(is.na(in_eez) ~ FALSE,
+                                           .default = in_eez),
+    in_territorial_waters = case_when(is.na(in_territorial_waters) ~ FALSE,
+                                           .default = in_territorial_waters),
+         in_fishing_coastal_waters = case_when(is.na(in_fishing_coastal_waters) ~ FALSE,
+                                           .default = in_fishing_coastal_waters),
+         ) %>%
+  mutate(flag = ifelse(country == 'FRA', 'FRA', 'foreign'))
+```
+
+Sur les `r df %>% pull(mmsi) %>% unique() %>% length()` navires de la flotte, seulement `r df %>% filter(in_territorial_waters) %>% pull(mmsi) %>% unique() %>% length()` (`r df %>% filter(in_territorial_waters) %>% pull(mmsi) %>% unique() %>% length() / (df %>% pull(mmsi) %>% unique() %>% length()) * 100`%) ont pêché au moins une fois dans les eaux territoriales françaises durant la période d'étude.
+
+#### Distribution de la flotte pêchant dans les eaux territoriales françaises
+
+##### Distribution de la flotte par pays et par catégorie
+```{r}
+## Fleet distribution by country and category
+summary <- df %>%
+  filter(in_territorial_waters) %>%
+  dplyr::select(mmsi, country, category) %>%
+  distinct() %>%
+  group_by(category, country) %>%
+  summarise(n = n()) %>%
+  dplyr::ungroup() %>%
+  tidyr::pivot_wider(names_from = country, values_from = n)
+
+summary <- summary %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate("Total by category" = rowSums(dplyr::select(., -c(`category`)), na.rm = TRUE))
+
+totals <- NULL
+for (i_col in colnames(summary)[2:ncol(summary)]) {
+  totals <- c(totals, as.integer(sum(summary[i_col], na.rm = TRUE)))
+}
+
+names(totals) <- colnames(summary)[2:ncol(summary)]
+
+summary <- summary %>%
+  dplyr::bind_rows(totals)
+
+summary[nrow(summary), 1] <- "Total by country"
+
+summary %>% 
+  replace(is.na(.), 0) %>%
+  kable () %>%
+  kable_paper(full_width = T) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed", "responsive", "hover")) 
+```
+
+##### Distribution de la flotte par pays, par catégorie et par classe de taille
+
+Classes de taille : [25-40), [40-60), [60-80), [80-Inf)
+```{r, results='asis'}
+size_breaks = c(0, 25, 40, 60, 80, Inf)
+
+categories = df %>% pull(category) %>% unique()
+
+fleet_repartition = NULL
+for (cat in categories) {
+  summary <- df %>%
+    filter(in_territorial_waters & category == cat) %>%
+    dplyr::select(mmsi, country, length) %>%
+    distinct() %>%
+    dplyr::mutate(size_class = cut(length,
+                                   breaks=size_breaks, include.lowest = T, right = F)) %>%
+    group_by(country, size_class) %>%
+    summarise(n = n()) %>%
+    dplyr::ungroup() %>%
+    tidyr::pivot_wider(names_from = size_class, values_from = n)
+    
+  summary <- summary %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate("Total by country" = rowSums(dplyr::select(., -c(`country`)), na.rm = TRUE))
+
+  totals <- NULL
+  for (i_col in colnames(summary)[2:ncol(summary)]) {
+    totals <- c(totals, as.integer(sum(summary[i_col], na.rm = TRUE)))
+  }
+  
+  names(totals) <- colnames(summary)[2:ncol(summary)]
+  
+  summary <- summary %>%
+    dplyr::bind_rows(totals)
+  
+  summary[nrow(summary), 1] <- "Total by size class"
+      
+    
+  fleet_repartition[[cat]] <- summary
+}
+
+for (cat in names(fleet_repartition)) {
+  print(landscape(kable_styling(fleet_repartition[[cat]] %>%  
+    replace(is.na(.), 0) %>%
+    kable (caption = cat) %>%
+    kable_paper(full_width = T) %>%
+    kable_styling(bootstrap_options = c("striped", "condensed", "responsive", "hover")))))
+}
+```
+
+
+## Résultat
+
+### Pourcenage de l'effort de pêche dans les eaux territoriales
+
+```{r}
+vessels_in_terr_waters <- df %>%
+  filter(in_territorial_waters) %>%
+  dplyr::select(mmsi, year) %>%
+  distinct()
+
+yearly_activity_df <- df %>%
+  right_join(vessels_in_terr_waters, by = c("mmsi", "year")) %>%
+  group_by(mmsi, year, in_territorial_waters, category, country, flag) %>%
+  summarise(activity = sum(na.omit(fishing_hours))) %>%
+  dplyr::ungroup() %>%
+  tidyr::pivot_wider(names_from = in_territorial_waters, values_from = activity) %>%
+  rename("activity_outside" = `FALSE`,
+         "activity_inside" = `TRUE`) %>%
+  rowwise() %>%
+  mutate(total_activity = sum(activity_outside, activity_inside, na.rm = T),
+         activity_inside = ifelse(is.na(activity_inside), 0, activity_inside),
+        percent = activity_inside / total_activity * 100)
+
+gobal_activity_df <- df %>%
+  right_join(vessels_in_terr_waters, by = c("mmsi", "year")) %>%
+  group_by(mmsi, in_territorial_waters, category, country, flag) %>%
+  summarise(activity = sum(na.omit(fishing_hours))) %>%
+  dplyr::ungroup() %>%
+  tidyr::pivot_wider(names_from = in_territorial_waters, values_from = activity) %>%
+  rename("activity_outside" = `FALSE`,
+         "activity_inside" = `TRUE`) %>%
+  rowwise() %>%
+  mutate(total_activity = sum(activity_outside, activity_inside, na.rm = T),
+         activity_inside = ifelse(is.na(activity_inside), 0, activity_inside),
+        percent = activity_inside / total_activity * 100)
+```
+
+```{r}
+wrap_text <- function(x, chars = 10) {
+  stringr::str_wrap(x, chars)
+}
+
+ggplot(data = yearly_activity_df, aes(x = year, y = percent)) +
+  geom_boxplot(outliers = FALSE) +
+  facet_grid(.~category, labeller = as_labeller(wrap_text)) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), strip.text = element_text(size = 6))
+
+ggplot(data = yearly_activity_df, aes(x = year, y = percent)) +
+  geom_boxplot(outliers = FALSE) +
+  facet_grid(.~flag, labeller = as_labeller(wrap_text)) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), strip.text = element_text(size = 6))
+
+ggplot(data = yearly_activity_df, aes(x = year, y = percent)) +
+  geom_boxplot(outliers = FALSE) +
+  facet_grid(.~country, labeller = as_labeller(wrap_text)) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), strip.text = element_text(size = 6))
+
+ggplot(data = yearly_activity_df, aes(x = year, y = percent)) +
+  geom_boxplot(outliers = FALSE) +
+  facet_grid(flag~category, labeller = as_labeller(wrap_text)) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), strip.text = element_text(size = 6))
+```
+
+
+### Résumé statistique
+
+```{r}
+effectif <- yearly_activity_df %>%
+  group_by(category, flag) %>%
+  dplyr::select(mmsi) %>%
+  distinct() %>%
+  summarise(n = n())
+
+yearly_activity_df %>%
+  group_by(category, flag) %>%
+  left_join(effectif, by = c("category", "flag")) %>%
+  reframe(qs = quantile(percent, c(0.25, 0.50, 0.75, 0.95)), prob = c(0.25, 0.50, 0.75, 0.95), n = max(n)) %>%
+  arrange_at("qs", desc) %>%
+  tidyr::pivot_wider(names_from = prob, values_from = qs) %>%
+  rename("q25" = `0.25`,
+         "q50" = `0.5`,
+         "q75" = `0.75`,
+         "q95" = `0.95`,
+         )  %>%
+  kable (digits = 2) %>%
+  kable_paper(full_width = T) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed", "responsive", "hover"))
+
+gobal_activity_df %>%
+  group_by(category) %>%
+  reframe(qs = quantile(percent, c(0.25, 0.50, 0.75, 0.95)), prob = c(0.25, 0.50, 0.75, 0.95), n = n()) %>%
+  arrange_at("qs", desc) %>%
+  tidyr::pivot_wider(names_from = prob, values_from = qs) %>%
+  rename("q25" = `0.25`,
+         "q50" = `0.5`,
+         "q75" = `0.75`,
+         "q95" = `0.95`,
+         ) %>%
+  kable (digits = 2) %>%
+  kable_paper(full_width = T) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed", "responsive", "hover"))
+
+```
+
+Pourcentage de l'effort de pêche total par an dans les eaux territoriales :
+```{r}
+yearly_activity_df %>%
+  group_by(year, flag) %>%
+  reframe(percent = sum(activity_inside) / sum(total_activity) * 100) %>%
+  kable (digits = 2) %>%
+  kable_paper(full_width = T) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed", "responsive", "hover"))
+```
+
+### Cartographie
+
+```{r}
+df_map <- df %>%
+  filter(in_eez)
+
+## Create raster global activity
+extent_box <- df_map %>%
+  reframe(minLon = min(lon),
+          maxLon = max(lon),
+          minLat = min(lat),
+          maxLat = max(lat))
+
+## Resolution
+resolution <- c(0.1, 0.1)
+grid <- create_grid(df_map, resolution = resolution)
+
+## Function raster
+log_sum_fishing_hours <- function(x, ...) {log(sum(na.omit(x)))}
+
+france <- ne_countries(country = "france", type = "map_units", returnclass = "sf", scale = "large") %>%
+  filter(geounit == 'France')
+
+
+zoom_map <- function(data, extent, breaks, limits, title, subtitle) {
+  data_cropped = terra::crop(data, ext(extent))
+  
+  p <- ggplot() +
+    geom_spatraster(data = data_cropped, na.rm = T) +
+    scale_fill_viridis_c("Intensité de pêche (échelle logarithmique)", 
+                         guide="colorbar", 
+                         na.value="transparent", 
+                         direction = -1, 
+                         option = 'G', 
+                         breaks = breaks,
+                        limits = c(limits$min, limits$max)) +
+    geom_sf(data = france,
+            fill = "grey70",
+            color = "grey50",
+            size = 0.15) +
+    geom_sf(data = EEZ, fill = NA, lwd = .3) +
+    geom_sf(data = coastal_waters, fill = NA, alpha = .4, col = "#DABD00", lwd = .7) +
+    geom_sf(data = lim_territorial_waters, col = "#F05B35", lwd = .7) +
+    scale_x_continuous(limits = c(ext(data_cropped)$xmin, ext(data_cropped)$xmax), expand = c(0, 0)) +
+    scale_y_continuous(limits = c(ext(data_cropped)$ymin, ext(data_cropped)$ymax), expand = c(0, -0.1)) +
+    annotation_scale(location = "bl", width_hint = 0.5) +
+    annotation_north_arrow(location = "bl", which_north = "true", 
+        pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
+        style = north_arrow_fancy_orienteering) +
+    theme_bw() +
+    facet_wrap(.~lyr) +
+    theme(legend.position = "bottom") +
+    guides(fill = guide_colorbar(
+      title.position = "top",
+      title.hjust = 0.5,
+     theme = theme(
+        legend.key.width  = unit(10, "lines"),
+        legend.key.height = unit(1, "lines")
+      )
+    )) +
+    ggtitle(title, subtitle = subtitle)
+  
+  return(p)
+}
+
+zones <- c("med" = med_zone, "memn" = memn_zone, "namo" = namo_zone, "sa" = sa_zone)
+```
+
+#### Activité globale et zoom sur les zones de planification maritime française
+```{r}
+value_limits <- df_map %>%
+  group_by(lon, lat, year) %>%
+  summarise(total = log(sum(fishing_hours, na.rm = T))) %>%
+  ungroup() %>%
+  summarise(min = min(total), max = max(total))
+
+breaks <- seq(floor(value_limits$min), ceiling(value_limits$max), 2)
+
+layers = ""
+global_activity_r <- df_to_raster(df_map, grid, FUN = log_sum_fishing_hours, quantity = "fishing_hours", layers = layers)
+crs(global_activity_r) <- 4326
+
+global_activity_sr <- rast(global_activity_r)
+
+p <- NULL
+for (zone in names(zones)) {
+  p[[zone]] <- zoom_map(global_activity_sr, zones[[zone]], breaks = breaks, limits = value_limits, title = sprintf("Effort de pêche global (2021-2024) - zone %s", toupper(zone)), subtitle = "Résolution 0.1°")
+  ggsave(plot = p[[zone]], sprintf("../output/%s_global_activity.png", toupper(zone)), width = 24, height = 20, unit = "cm")
+  print(p[[zone]])
+}
+```
+
+#### Activité des navires FR et étrangers et zoom sur les zones de planification maritime française
+```{r}
+value_limits <- df_map %>%
+  group_by(lon, lat) %>%
+  summarise(total = log(sum(fishing_hours, na.rm = T))) %>%
+  ungroup() %>%
+  summarise(min = min(total), max = max(total))
+
+breaks <- seq(floor(value_limits$min), ceiling(value_limits$max), 2)
+
+layers = "flag"
+global_activity_r <- df_to_raster(df_map, grid, FUN = log_sum_fishing_hours, quantity = "fishing_hours", layers = layers)
+crs(global_activity_r) <- 4326
+
+global_activity_sr <- rast(global_activity_r)
+
+p <- NULL
+for (zone in names(zones)) {
+  p[[zone]] <- zoom_map(global_activity_sr, zones[[zone]], breaks = breaks, limits = value_limits, title = sprintf("Effort de pêche global (2021-2024) - zone %s", toupper(zone)), subtitle = "Résolution 0.1°")
+  ggsave(plot = p[[zone]], sprintf("../output/%s_activity_by_flag.png", toupper(zone)), width = 30, height = 20, unit = "cm")
+  print(p[[zone]])
+
+}
+```

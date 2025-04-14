@@ -1,0 +1,178 @@
+---
+title: "Préparation des données d'activité de pêche"
+author: "Marthe Vienne"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Construction de la flotte
+
+#### Étape 1 :
+
+On récupère les identifiants des navires présents dans le registre européen d'une longueur hors tout supérieure à 25 m :
+```{r}
+vessels_25m <- bloomr.fleetregister::get_size() %>% 
+  filter(end_date >= '2021-01-01' & start_date <= '2024-12-31') %>%
+  filter(length >= 25)
+```
+Nombre de navires (CFR) : `length(unique(vessels_25m$cfr_id))`
+NB : le nombre d'enregistrements (n = `nrow(vessels_25m)`) et supérieur au nombre de navires (n = `length(unique(vessels_25m$cfr_id))`) car un navire peut subir des modifications qui affectent ses dimensions au cours de sa vie.
+
+#### Étape 2 :
+
+Ensuite, on récupère les informations valides pour la liste de navires identifiés (MMSI, IMO, country et main_fishing_gear) :
+```{r}
+gear_codes <- readxl::read_excel(system.file("extdata", "MDR_Gear_Type.xls", package = "bloomr.fleetregister"), 1)
+
+mmsi <- bloomr.fleetregister::get_mmsi() %>% 
+  filter(end_date >= '2021-01-01' & start_date <= '2024-12-31')
+imo <- bloomr.fleetregister::get_imo() %>% 
+  filter(end_date >= '2021-01-01' & start_date <= '2024-12-31')
+
+vessels_mmsi <- mmsi %>% 
+  dplyr::select(c(cfr_id, mmsi)) %>% 
+  filter(!is.na(mmsi) & cfr_id %in% vessels_25m$cfr_id & mmsi < 300000000) %>%  # filtre les navires qui ne sont pas européens
+  distinct()
+vessels_imo <- imo %>% 
+  dplyr::select(c(cfr_id, uvi)) %>% 
+  filter(!is.na(uvi) & cfr_id %in% vessels_25m$cfr_id) %>% 
+  distinct()
+
+country <- bloomr.fleetregister::get_country() %>%
+    filter(end_date >= '2021-01-01' & start_date <= '2024-12-31')
+
+fishing_gear <- bloomr.fleetregister::get_fishing_gears() %>% 
+    filter(end_date >= '2021-01-01' & start_date <= '2024-12-31') %>%
+  left_join(gear_codes %>% dplyr::select(Code, Category, SubCategory), by = c("gear" = "Code")) %>%
+  mutate(category = case_when(!is.na(SubCategory) ~ toupper(SubCategory),
+                              .default = Category)) %>%
+  dplyr::select(-c(Category, SubCategory))
+```
+
+
+#### Étape 3 :
+
+On compare la flotte du registre avec la flotte de Global Fishing Watch (source : https://globalfishingwatch.org/data-download/datasets/public-fishing-effort) : 
+la correspondance entre le registre et les données GFW a été effectuée d'abord via le MMSI puis via l'IMO.
+
+```{r}
+vessels_gfw <- read.csv2("../data/gfw_fishing_effort/fishing-vessels-v3.csv", sep =",")
+```
+
+```{r}
+### MMSI
+missing_mmsi <- vessels_mmsi %>% filter(!mmsi %in% vessels_gfw$mmsi)
+
+### IMO
+imo_list_to_check <- vessels_imo %>% filter(cfr_id %in% missing_mmsi$cfr_id)
+
+df = tibble()
+for (index in 1:nrow(imo_list_to_check)) {
+  mmsi = NULL
+  row = imo_list_to_check[index, ]
+  imo = row[1, 2]
+  id = row[1, 1]
+  gfw_info = gfwr::get_vessel_info(query=imo)
+  mmsi = unique(gfw_info$registryInfo$ssvid)
+
+  if (length(mmsi) == 0) {
+    mmsi = unique(gfw_info$selfReportedInfo$ssvid)
+  }
+
+  if (length(mmsi) > 0) {
+    df = rbind(df, tibble(id = id, imo = imo, mmsi = mmsi))
+  } else {
+    df = rbind(df, tibble(id = id, imo = imo, mmsi = NA))
+  }
+}
+```
+
+#### Nettoyage de la flotte
+
+```{r}
+final_list_mmsi <- vessels_mmsi %>% 
+  rbind(df %>% dplyr::select(cfr_id = id, mmsi)) %>%
+  filter(mmsi %in% vessels_gfw$mmsi) %>%
+  distinct() %>%
+  mutate(mmsi = as.numeric(mmsi))
+```
+
+Nettoyage des MMSI associés à plusieurs CFR
+```{r}
+cfr <- bloomr.fleetregister::get_cfr()
+
+final_list_mmsi %>%
+  filter(mmsi %in% (final_list_mmsi %>% 
+  group_by(mmsi) %>%
+  summarise(n = n()) %>%
+  filter(n > 1) %>% pull(mmsi))) %>%
+  left_join(cfr, by = c("cfr_id" = "id"))
+
+final_list_mmsi <- final_list_mmsi %>%
+  mutate(mmsi = case_when(cfr_id == "0194f9ff-14e2-7d80-824a-5aa628272acd" & mmsi == 265828000 ~ 220141000,
+                          .default = mmsi))
+```
+
+La flotte étudiée est constituée de `final_list_mmsi %>% pull(cfr_id) %>% unique() %>% length()` CFR et de `final_list_mmsi %>% pull(mmsi) %>% unique() %>% length()` MMSI.
+Attention : à cette étape, tous les navires dans la flotte de pêchent pas forcément dans les eaux territoriales hexagonales françaises.
+
+### Effort de pêche (2021-2024)
+
+```{r}
+years = seq(2021, 2024)
+```
+
+On utilise les données d'effort de pêche quotidiennes par MMSI de Global Fishing Watch entre 2021 et 2024 (https://globalfishingwatch.org/data-download/datasets/public-fishing-effort).
+
+On concatène l'effort de pêche par jour et par année pour les MMSI sélectionnés.
+
+```{r}
+global_fishing_effort <- NULL
+
+for (year in years) {
+  print(year)
+  yearly_fishing_effort <- tibble()
+  files <- list.files(sprintf("../data/gfw_fishing_effort/mmsi-daily-csvs-10-v3-%s/", year), full.names = T, recursive = T)
+  files <- files[grepl("mmsi-daily-csvs-10", files) & grepl(".csv$", files)]
+  
+  for (file in files) {
+    daily_fishing_effort <- read.csv2(file, sep =",") %>%
+      filter(mmsi %in% final_list_mmsi$mmsi) %>%
+      mutate(date = as.Date(date),
+             cell_ll_lat = as.numeric(cell_ll_lat),
+             cell_ll_lon = as.numeric(cell_ll_lon),
+             fishing_hours = as.numeric(fishing_hours)) %>%
+      filter(fishing_hours > 0)
+    yearly_fishing_effort <- rbind(yearly_fishing_effort, daily_fishing_effort)
+  }
+  
+  global_fishing_effort[[as.character(year)]] <- yearly_fishing_effort
+}
+```
+
+
+### Combinaison de l'effort de pêche et du registre de la flotte
+
+```{r}
+global_fishing_effort <- bind_rows(global_fishing_effort, .id = "year")
+
+df <- global_fishing_effort %>%
+  left_join(final_list_mmsi, by = "mmsi", relationship = "many-to-many") %>%
+  left_join(fishing_gear, join_by("cfr_id" == "cfr_id", between("date", "start_date", "end_date")), relationship = "many-to-many") %>%
+  left_join(country, join_by("cfr_id" == "cfr_id", between("date", "start_date", "end_date")), relationship = "many-to-many") %>%
+  left_join(vessels_25m, by = "cfr_id", relationship = "many-to-many") %>%
+  filter(!is.na(gear) & !is.na(country)) %>%# filter rows with no data (mismatch between declared info on fleet register and true history of vessel)
+  mutate(lon = cell_ll_lon + 0.1 / 2,
+         lat = cell_ll_lat + 0.1 / 2) %>%
+  dplyr::select(-c(cell_ll_lat, cell_ll_lon, start_date.x, end_date.x, start_date, end_date, start_date.y, end_date.y))
+```
+
+
+### Sauvegarde des données
+```{r}
+saveRDS(df, "../data/UE_UK_fishing_effort_gfw_2021-2024.rds")
+```
