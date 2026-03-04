@@ -6,7 +6,7 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
-```{r setup, include=F}
+```{r setup, include=F, }
 knitr::opts_chunk$set(echo = FALSE, message = FALSE, fig.width = 12, fig.height = 8)
 ```
 
@@ -34,12 +34,9 @@ Les figures réalisées lors de cette analyse sont sauvegardées dans le dossier
 
 ## Introduction
 
-L'analyse a été conduite à partir des données statiques d'effort de pêche de Global Fishing Watch (GFW) à l'échelle du navire : https://globalfishingwatch.org/data-download/datasets/public-fishing-effort.
-La période d'étude s'étend entre 2021 et 2024. L'étude ne concerne que les navires UE + UK ≥ 25 m pêchant dans les eaux territoriales françaises (uniquement en France hexagonale).
+L'analyse a été conduite à partir des données statiques d'effort de pêche de Global Fishing Watch (GFW) à l'échelle du navire : <https://globalfishingwatch.org/data-download/datasets/public-fishing-effort>. La période d'étude s'étend entre 2021 et 2024. L'étude ne concerne que les navires UE + UK ≥ 25 m pêchant dans les eaux territoriales françaises (uniquement en France hexagonale).
 
-Sur la période d'étude, l'historique de la flotte a été construit à partir du registre de la flotte européenne : https://webgate.ec.europa.eu/fleet-europa/search_en. 
-BLOOM a développé son propre gestionnaire du registre de la flotte qui télécharge et synthétise l'historique des navires : https://github.com/associationbloom/eu-fleet-register-manager.
-Uniquement les navires présents à la fois dans la flotte du registre européen et dans les données GFW ont été retenus.
+Sur la période d'étude, l'historique de la flotte a été construit à partir du registre de la flotte européenne : <https://webgate.ec.europa.eu/fleet-europa/search_en>. BLOOM a développé son propre gestionnaire du registre de la flotte qui télécharge et synthétise l'historique des navires : <https://github.com/associationbloom/eu-fleet-register-manager>. Uniquement les navires présents à la fois dans la flotte du registre européen et dans les données GFW ont été retenus.
 
 ## Matériel et méthodes
 
@@ -47,7 +44,8 @@ Uniquement les navires présents à la fois dans la flotte du registre européen
 
 ```{r}
 # EEZ
-EEZ <- gaz_search(5677) %>% gaz_geometry()
+EEZ <- gaz_search(5677) #%>% gaz_geometry()
+EEZ <- EEZ %>% gaz_geometry()
 st_crs(EEZ) <- 4326
 
 # Internal waters
@@ -111,16 +109,19 @@ namo_zone <- g$tables$MSP_Spatial_Plan
 
 g <- geopackage("../data/PLANIFICATION_MARITIME_PACK/PlanificationMaritime_SA.gpkg", connect = TRUE)
 sa_zone <- g$tables$MSP_Spatial_Plan
+
 ```
 
 ### Activité dans les eaux françaises et distribution de la flotte
 
 Le prétraitement des données et construction de la flotte est disponible dans 0.prepare_fishing_activity_data.html
+
 ```{r}
 df <- readRDS("../data/UE_UK_fishing_effort_gfw_2021-2024.rds")
 ```
 
 #### Nombre de navires ayant eu une activité de pêche dans la ZEE FR, les eaux territoriales françaises et dans la bande côtière de pêche
+
 ```{r}
 coordinates_df <- df %>%
   dplyr::select(lon, lat) %>%
@@ -173,11 +174,21 @@ df <- df %>%
   mutate(flag = ifelse(country == 'FRA', 'FRA', 'foreign'))
 ```
 
-Sur les `r df %>% pull(mmsi) %>% unique() %>% length()` navires de la flotte, seulement `r df %>% filter(in_territorial_waters) %>% pull(mmsi) %>% unique() %>% length()` (`r df %>% filter(in_territorial_waters) %>% pull(mmsi) %>% unique() %>% length() / (df %>% pull(mmsi) %>% unique() %>% length()) * 100`%) ont pêché au moins une fois dans les eaux territoriales françaises durant la période d'étude.
+Sur les `r df %>% pull(mmsi) %>% unique() %>% length()` navires de la flotte, seulement `r df %>% filter(in_territorial_waters) %>% pull(mmsi) %>% unique() %>% length()` (`r sprintf("%.0f", df %>% filter(in_territorial_waters) %>% pull(mmsi) %>% unique() %>% length() / (df %>% pull(mmsi) %>% unique() %>% length()) * 100)`%) ont pêché au moins une fois dans les eaux territoriales françaises durant la période d'étude.
+
+
+```{r}
+mmsis <- paste0(df %>% filter(in_eez) %>% pull(mmsi) %>% unique())
+paste(df %>% filter(in_eez) %>% pull(mmsi) %>% unique(), collapse=", ")
+
+```
+
+
 
 #### Distribution de la flotte pêchant dans les eaux territoriales françaises
 
 ##### Distribution de la flotte par pays et par catégorie
+
 ```{r}
 ## Fleet distribution by country and category
 summary <- df %>%
@@ -215,6 +226,7 @@ summary %>%
 ##### Distribution de la flotte par pays, par catégorie et par classe de taille
 
 Classes de taille : [25-40), [40-60), [60-80), [80-Inf)
+
 ```{r, results='asis'}
 size_breaks = c(0, 25, 40, 60, 80, Inf)
 
@@ -262,10 +274,9 @@ for (cat in names(fleet_repartition)) {
 }
 ```
 
-
 ## Résultat
 
-### Pourcenage de l'effort de pêche dans les eaux territoriales
+### Pourcentage de l'effort de pêche dans les eaux territoriales
 
 ```{r}
 vessels_in_terr_waters <- df %>%
@@ -330,7 +341,6 @@ ggplot(data = yearly_activity_df, aes(x = year, y = percent)) +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1), strip.text = element_text(size = 6))
 ```
 
-
 ### Résumé statistique
 
 ```{r}
@@ -371,7 +381,8 @@ gobal_activity_df %>%
 
 ```
 
-Pourcentage de l'effort de pêche total par an dans les eaux territoriales :
+Pourcentage de l'effort de pêche par an et par pavillon dans les eaux territoriales :
+
 ```{r}
 yearly_activity_df %>%
   group_by(year, flag) %>%
@@ -380,6 +391,24 @@ yearly_activity_df %>%
   kable_paper(full_width = T) %>%
   kable_styling(bootstrap_options = c("striped", "condensed", "responsive", "hover"))
 ```
+
+Résumé de l'effort de pêche total et par an
+
+Sur la période 2021-2024, la flotte a totalisé `r sprintf("%.0f", yearly_activity_df %>% ungroup() %>% summarise(total = sum(activity_inside, na.rm = T)) %>% pull(total))` heures de pêche dans les eaux territoriales FR (soit `r sprintf("%.1f", yearly_activity_df %>% ungroup() %>% summarise(total = sum(activity_inside, na.rm = T), percent = sum(activity_inside) / sum(total_activity) * 100) %>% pull(percent))`%) 
+
+Résumé par an :
+
+```{r}
+yearly_activity_df %>%
+  group_by(year) %>%
+  summarise(total = sum(activity_inside, na.rm = T),
+            percent = sum(activity_inside) / sum(total_activity) * 100) %>%
+  kable (digits = 2) %>%
+  kable_paper(full_width = T) %>%
+  kable_styling(bootstrap_options = c("striped", "condensed", "responsive", "hover"))
+```
+
+
 
 ### Cartographie
 
@@ -401,48 +430,53 @@ grid <- create_grid(df_map, resolution = resolution)
 ## Function raster
 log_sum_fishing_hours <- function(x, ...) {log(sum(na.omit(x)))}
 
+## Function raster
+sum_fishing_hours <- function(x, ...) {sum(na.omit(x))}
+
 france <- ne_countries(country = "france", type = "map_units", returnclass = "sf", scale = "large") %>%
   filter(geounit == 'France')
 
 
-zoom_map <- function(data, extent, breaks, limits, title, subtitle) {
-  data_cropped = terra::crop(data, ext(extent))
-  
+zoom_map <- function(data, y, breaks, limits, title, subtitle) {
+  if (!is.na(y)) {
+    data_cropped = terra::crop(data, y)
+    # data_cropped = terra::mask(data_cropped, y)
+    x_limits = c(ext(y)$xmin, ext(y)$xmax)
+    y_limits = c(ext(y)$ymin, ext(y)$ymax)
+  }
   p <- ggplot() +
     geom_spatraster(data = data_cropped, na.rm = T) +
-    scale_fill_viridis_c("Intensité de pêche (échelle logarithmique)", 
+    scale_fill_viridis_c("Intensité de pêche\n(échelle logarithmique)", 
                          guide="colorbar", 
                          na.value="transparent", 
-                         direction = -1, 
-                         option = 'G', 
+                           direction = 1, 
+                         option = 'A',
                          breaks = breaks,
                         limits = c(limits$min, limits$max)) +
     geom_sf(data = france,
-            fill = "grey70",
-            color = "grey50",
+            fill = "grey20",
+            color = "grey20",
             size = 0.15) +
-    geom_sf(data = EEZ, fill = NA, lwd = .3) +
-    geom_sf(data = coastal_waters, fill = NA, alpha = .4, col = "#DABD00", lwd = .7) +
-    geom_sf(data = lim_territorial_waters, col = "#F05B35", lwd = .7) +
-    scale_x_continuous(limits = c(ext(data_cropped)$xmin, ext(data_cropped)$xmax), expand = c(0, 0)) +
-    scale_y_continuous(limits = c(ext(data_cropped)$ymin, ext(data_cropped)$ymax), expand = c(0, -0.1)) +
-    annotation_scale(location = "bl", width_hint = 0.5) +
-    annotation_north_arrow(location = "bl", which_north = "true", 
-        pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
-        style = north_arrow_fancy_orienteering) +
-    theme_bw() +
-    facet_wrap(.~lyr) +
-    theme(legend.position = "bottom") +
+    # geom_sf(data = EEZ, fill = NA, lwd = .6, col = "grey20") +
+    # geom_sf(data = coastal_waters, fill = NA, alpha = .4, col = "#DABD00", lwd = .8) +
+    geom_sf(data = lim_territorial_waters, col = "#1EE0AB", lwd = .8) +
+    scale_x_continuous(limits = x_limits, expand = c(0, 0)) +
+    scale_y_continuous(limits = y_limits, expand = c(0, -0.1)) +
+    # annotation_scale(location = "bl", width_hint = 0.5) +
+    # annotation_north_arrow(location = "bl", which_north = "true", 
+    #     pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
+    #     style = north_arrow_fancy_orienteering) +
+    theme_dark() +
+    # facet_wrap(.~lyr) +
     guides(fill = guide_colorbar(
       title.position = "top",
       title.hjust = 0.5,
      theme = theme(
-        legend.key.width  = unit(10, "lines"),
-        legend.key.height = unit(1, "lines")
+        legend.key.width  = unit(1, "lines"),
+        legend.key.height = unit(10, "lines")
       )
     )) +
     ggtitle(title, subtitle = subtitle)
-  
   return(p)
 }
 
@@ -450,14 +484,30 @@ zones <- c("med" = med_zone, "memn" = memn_zone, "namo" = namo_zone, "sa" = sa_z
 ```
 
 #### Activité globale et zoom sur les zones de planification maritime française
+
+```{r}
+med_zone_sv = query(med_zone)
+namo_zone_sv = query(namo_zone)
+memn_zone_sv = query(memn_zone)
+sa_zone_sv = query(sa_zone)
+
+zones_ext <- tibble(
+  names = c("med", "namo", "memn", "sa"),
+  xmin = c(ext(med_zone)$xmin, ext(namo_zone)$xmin, ext(memn_zone)$xmin, ext(sa_zone)$xmin),
+  xmax = c(ext(med_zone)$xmax, ext(namo_zone)$xmax, ext(memn_zone)$xmax, ext(sa_zone)$xmax),
+  ymin = c(ext(med_zone)$ymin, ext(namo_zone)$ymin, ext(memn_zone)$ymin, ext(sa_zone)$ymin),
+  ymax = c(ext(med_zone)$ymax, ext(namo_zone)$ymax, ext(memn_zone)$ymax, ext(sa_zone)$ymax),
+)
+```
+
 ```{r}
 value_limits <- df_map %>%
-  group_by(lon, lat, year) %>%
+  group_by(lon, lat) %>%
   summarise(total = log(sum(fishing_hours, na.rm = T))) %>%
   ungroup() %>%
-  summarise(min = min(total), max = max(total))
+  summarise(min = log(24), max = max(total))
 
-breaks <- seq(floor(value_limits$min), ceiling(value_limits$max), 2)
+breaks <- seq(floor(value_limits$min), ceiling(value_limits$max), 1)
 
 layers = ""
 global_activity_r <- df_to_raster(df_map, grid, FUN = log_sum_fishing_hours, quantity = "fishing_hours", layers = layers)
@@ -465,35 +515,82 @@ crs(global_activity_r) <- 4326
 
 global_activity_sr <- rast(global_activity_r)
 
-p <- NULL
-for (zone in names(zones)) {
-  p[[zone]] <- zoom_map(global_activity_sr, zones[[zone]], breaks = breaks, limits = value_limits, title = sprintf("Effort de pêche global (2021-2024) - zone %s", toupper(zone)), subtitle = "Résolution 0.1°")
-  ggsave(plot = p[[zone]], sprintf("../output/%s_global_activity.png", toupper(zone)), width = 24, height = 20, unit = "cm")
-  print(p[[zone]])
-}
-```
-
-#### Activité des navires FR et étrangers et zoom sur les zones de planification maritime française
-```{r}
-value_limits <- df_map %>%
-  group_by(lon, lat) %>%
-  summarise(total = log(sum(fishing_hours, na.rm = T))) %>%
-  ungroup() %>%
-  summarise(min = min(total), max = max(total))
-
-breaks <- seq(floor(value_limits$min), ceiling(value_limits$max), 2)
-
-layers = "flag"
-global_activity_r <- df_to_raster(df_map, grid, FUN = log_sum_fishing_hours, quantity = "fishing_hours", layers = layers)
-crs(global_activity_r) <- 4326
-
-global_activity_sr <- rast(global_activity_r)
+global_activity_sr[global_activity_sr <= log(24)] = NA
 
 p <- NULL
 for (zone in names(zones)) {
-  p[[zone]] <- zoom_map(global_activity_sr, zones[[zone]], breaks = breaks, limits = value_limits, title = sprintf("Effort de pêche global (2021-2024) - zone %s", toupper(zone)), subtitle = "Résolution 0.1°")
-  ggsave(plot = p[[zone]], sprintf("../output/%s_activity_by_flag.png", toupper(zone)), width = 30, height = 20, unit = "cm")
-  print(p[[zone]])
-
+  map <- zoom_map(global_activity_sr, zones[[zone]], breaks = breaks, limits = value_limits, title = sprintf("Effort de pêche global (2021-2024) - zone %s", toupper(zone)), subtitle = "Résolution 0.1°")
+  if (zone == "med") {
+    map <- map + geom_spatvector(data = simplifyGeom(med_zone_sv, tolerance=0.001, preserveTopology=FALSE, makeValid=TRUE), fill=NA, col="grey20", lwd=.8)
+  } else if (zone == "sa") {
+    map <- map + geom_spatvector(data = simplifyGeom(sa_zone_sv, tolerance=0.001, preserveTopology=FALSE, makeValid=TRUE), fill=NA, col="grey20", lwd=.8)
+  } else if (zone == "memn") {
+    map <- map + geom_spatvector(data = simplifyGeom(memn_zone_sv, tolerance=0.001, preserveTopology=FALSE, makeValid=TRUE), fill=NA, col="grey20", lwd=.8)
+  } else if (zone == "namo") {
+    map <- map + geom_spatvector(data = simplifyGeom(namo_zone_sv, tolerance=0.001, preserveTopology=FALSE, makeValid=TRUE), fill=NA, col="grey20", lwd=.8)
+  }
+  p[[zone]] <- map
+  ggsave(plot = map, sprintf("../output/%s_global_activity.png", toupper(zone)), width = 24, height = 20, unit = "cm")
+  print(map)
 }
+
+p_france <- ggplot() +
+    geom_spatraster(data = global_activity_sr, na.rm = T) +
+    scale_fill_viridis_c("Intensité de pêche\n(échelle logarithmique)",
+                         guide="colourbar",
+                         na.value="transparent",
+                         direction = 1,
+                         option = 'A',
+                         breaks = breaks,
+                        limits = c(value_limits$min, value_limits$max)) +
+    geom_sf(data = france,
+            fill = "grey20",
+            color = "grey20",
+            size = 0.15) +
+    geom_sf(data = lim_territorial_waters, col = "#1EE0AB", lwd = .7) +
+    annotation_scale(location = "bl", width_hint = 0.5) +
+    annotation_north_arrow(location = "bl", which_north = "true", 
+        pad_x = unit(0.25, "in"), pad_y = unit(0.25, "in"),
+        style = north_arrow_fancy_orienteering) +
+    theme_dark() +
+    guides(fill = guide_colorbar(
+      title.position = "top",
+      title.hjust = 0.5,
+     theme = theme(
+        legend.key.width  = unit(1, "lines"),
+        legend.key.height = unit(10, "lines")
+      )
+    )) +
+    ggtitle(sprintf("Effort de pêche global (2021-2024) - zone %s", toupper("FRANCE")), subtitle = "Résolution 0.1°") +
+    geom_spatvector(data = simplifyGeom(med_zone_sv, tolerance=0.001, preserveTopology=FALSE, makeValid=TRUE), fill=NA, col="grey20", lwd=.4) +
+    geom_spatvector(data = simplifyGeom(sa_zone_sv, tolerance=0.001, preserveTopology=FALSE, makeValid=TRUE), fill=NA, col="grey20", lwd=.4) +
+    geom_spatvector(data = simplifyGeom(memn_zone_sv, tolerance=0.001, preserveTopology=FALSE, makeValid=TRUE), fill=NA, col="grey20", lwd=.4) +
+    geom_spatvector(data = simplifyGeom(namo_zone_sv, tolerance=0.001, preserveTopology=FALSE, makeValid=TRUE), fill=NA, col="grey20", lwd=.4)
+
+ggsave(plot = p_france, sprintf("../output/%s_global_activity.png", toupper("FRANCE")), width = 24, height = 20, unit = "cm")
 ```
+
+<!-- #### Activité des navires FR et étrangers et zoom sur les zones de planification maritime française -->
+
+<!-- ```{r} -->
+<!-- value_limits <- df_map %>% -->
+<!--   group_by(lon, lat) %>% -->
+<!--   summarise(total = log(sum(fishing_hours, na.rm = T))) %>% -->
+<!--   ungroup() %>% -->
+<!--   summarise(min = min(total), max = max(total)) -->
+
+<!-- breaks <- seq(floor(value_limits$min), ceiling(value_limits$max), 2) -->
+
+<!-- layers = "flag" -->
+<!-- global_activity_r <- df_to_raster(df_map, grid, FUN = log_sum_fishing_hours, quantity = "fishing_hours", layers = layers) -->
+<!-- crs(global_activity_r) <- 4326 -->
+
+<!-- global_activity_sr <- rast(global_activity_r) -->
+
+<!-- p <- NULL -->
+<!-- for (zone in names(zones)) { -->
+<!--   p[[zone]] <- zoom_map(global_activity_sr, zones[[zone]], breaks = breaks, limits = value_limits, title = sprintf("Effort de pêche global (2021-2024) - zone %s", toupper(zone)), subtitle = "Résolution 0.1°") -->
+<!--   ggsave(plot = p[[zone]], sprintf("../output/%s_activity_by_flag.png", toupper(zone)), width = 30, height = 20, unit = "cm") -->
+<!--   print(p[[zone]]) -->
+<!-- } -->
+<!-- ``` -->

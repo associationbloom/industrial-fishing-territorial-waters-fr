@@ -53,7 +53,6 @@ fishing_gear <- bloomr.fleetregister::get_fishing_gears() %>%
   dplyr::select(-c(Category, SubCategory))
 ```
 
-
 #### Étape 3 :
 
 On compare la flotte du registre avec la flotte de Global Fishing Watch (source : https://globalfishingwatch.org/data-download/datasets/public-fishing-effort) : 
@@ -62,6 +61,7 @@ la correspondance entre le registre et les données GFW a été effectuée d'abo
 ```{r}
 vessels_gfw <- read.csv2("../data/gfw_fishing_effort/fishing-vessels-v3.csv", sep =",")
 ```
+
 
 ```{r}
 ### MMSI
@@ -117,6 +117,7 @@ final_list_mmsi <- final_list_mmsi %>%
                           .default = mmsi))
 ```
 
+
 La flotte étudiée est constituée de `final_list_mmsi %>% pull(cfr_id) %>% unique() %>% length()` CFR et de `final_list_mmsi %>% pull(mmsi) %>% unique() %>% length()` MMSI.
 Attention : à cette étape, tous les navires dans la flotte de pêchent pas forcément dans les eaux territoriales hexagonales françaises.
 
@@ -169,6 +170,8 @@ df <- global_fishing_effort %>%
   mutate(lon = cell_ll_lon + 0.1 / 2,
          lat = cell_ll_lat + 0.1 / 2) %>%
   dplyr::select(-c(cell_ll_lat, cell_ll_lon, start_date.x, end_date.x, start_date, end_date, start_date.y, end_date.y))
+
+df %>% pull(mmsi) %>% unique() %>% length() / vessels_mmsi %>% pull(mmsi) %>% unique() %>% length() * 100
 ```
 
 
